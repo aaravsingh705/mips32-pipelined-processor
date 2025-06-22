@@ -1,0 +1,116 @@
+module mips_32(clk1, clk2);
+  input clk1, clk2;
+
+  reg [31:0] if_id_ir, PC, if_id_npc;
+  reg [31:0] id_ex_a, id_ex_b, id_ex_ir, id_ex_npc, id_ex_imm;
+  reg [2:0]  id_ex_type;
+  reg [2:0]  ex_mem_type;
+  reg [31:0] ex_mem_aluout, ex_mem_ir, ex_mem_npc, ex_mem_b;
+  reg        ex_mem_cond;
+  reg [2:0]  mem_wb_type;
+  reg [31:0] mem_wb_ir, mem_wb_lmd, mem_wb_aluout;
+  reg [31:0] Reg[31:0];
+  reg [31:0] Mem[0:1023];
+
+  reg HALTED;
+  reg TAKEN_BRANCH;
+
+  parameter add=6'b000000, sub=6'b000001, ands=6'b000010,
+            ors=6'b000011, slt=6'b000100, mul=6'b000101,
+            hlt=6'b111111, lw=6'b001000, sw=6'b001001,
+            addi=6'b001010, subi=6'b001011, slti=6'b001100,
+            bneqz=6'b001101, beqz=6'b001110;
+
+  parameter rr_alu=3'b000, rm_alu=3'b001, load=3'b010,
+            store=3'b011, branch=3'b100, halt=3'b101;
+
+  always @(posedge clk1)
+    if (!HALTED) begin
+      if (((ex_mem_ir[31:26] == beqz) && ex_mem_cond) ||
+          ((ex_mem_ir[31:26] == bneqz) && !ex_mem_cond)) begin
+        if_id_ir    <= Mem[ex_mem_aluout];
+        TAKEN_BRANCH <= 1;
+        if_id_npc   <= ex_mem_aluout + 1;
+        PC          <= ex_mem_aluout + 1;
+      end else begin
+        if_id_ir    <= Mem[PC];
+        if_id_npc   <= PC + 1;
+        PC          <= PC + 1;
+      end
+    end
+
+  always @(posedge clk2)
+    if (!HALTED) begin
+      id_ex_a    <= (if_id_ir[25:21] == 0) ? 0 : Reg[if_id_ir[25:21]];
+      id_ex_b    <= (if_id_ir[20:16] == 0) ? 0 : Reg[if_id_ir[20:16]];
+      id_ex_npc  <= if_id_npc;
+      id_ex_ir   <= if_id_ir;
+      id_ex_imm  <= {{16{if_id_ir[15]}}, if_id_ir[15:0]};
+      case (if_id_ir[31:26])
+        add, sub, ands, ors, slt, mul: id_ex_type <= rr_alu;
+        addi, subi, slti            : id_ex_type <= rm_alu;
+        lw                          : id_ex_type <= load;
+        sw                          : id_ex_type <= store;
+        bneqz, beqz                 : id_ex_type <= branch;
+        hlt                         : id_ex_type <= halt;
+        default                     : id_ex_type <= halt;
+      endcase
+    end
+
+  always @(posedge clk1)
+    if (!HALTED) begin
+      ex_mem_ir     <= id_ex_ir;
+      ex_mem_type   <= id_ex_type;
+      TAKEN_BRANCH  <= 0;
+      case (id_ex_type)
+        rr_alu: begin
+          case (id_ex_ir[31:26])
+            add : ex_mem_aluout <= id_ex_a + id_ex_b;
+            sub : ex_mem_aluout <= id_ex_a - id_ex_b;
+            ands: ex_mem_aluout <= id_ex_a & id_ex_b;
+            ors : ex_mem_aluout <= id_ex_a | id_ex_b;
+            slt : ex_mem_aluout <= id_ex_a < id_ex_b;
+            mul : ex_mem_aluout <= id_ex_a * id_ex_b;
+            default: ex_mem_aluout <= 32'hxxxxxxxx;
+          endcase
+        end
+        rm_alu: begin
+          case (id_ex_ir[31:26])
+            addi : ex_mem_aluout <= id_ex_a + id_ex_imm;
+            subi : ex_mem_aluout <= id_ex_a - id_ex_imm;
+            slti : ex_mem_aluout <= id_ex_a < id_ex_imm;
+            default: ex_mem_aluout <= 32'hxxxxxxxx;
+          endcase
+        end
+        load, store: begin
+          ex_mem_aluout <= id_ex_a + id_ex_imm;
+          ex_mem_b      <= id_ex_b;
+        end
+        branch: begin
+          ex_mem_aluout <= id_ex_npc + id_ex_imm;
+          ex_mem_cond   <= (id_ex_a == 0);
+        end
+      endcase
+    end
+
+  always @(posedge clk2)
+    if (!HALTED) begin
+      mem_wb_type <= ex_mem_type;
+      mem_wb_ir   <= ex_mem_ir;
+      case (ex_mem_type)
+        rr_alu, rm_alu: mem_wb_aluout <= ex_mem_aluout;
+        load         : mem_wb_lmd    <= Mem[ex_mem_aluout];
+        store        : if (!TAKEN_BRANCH) Mem[ex_mem_aluout] <= ex_mem_b;
+      endcase
+    end
+
+  always @(posedge clk1)
+    if (!TAKEN_BRANCH) begin
+      case (mem_wb_type)
+        rr_alu : Reg[mem_wb_ir[15:11]] <= mem_wb_aluout;
+        rm_alu : Reg[mem_wb_ir[20:16]] <= mem_wb_aluout;
+        load   : Reg[mem_wb_ir[20:16]] <= mem_wb_lmd;
+        halt   : HALTED <= 1;
+      endcase
+    end
+endmodule
